@@ -1,7 +1,7 @@
-import MessageDigest
-import File
-import URI
-import HttpURLConnection
+import java.security.MessageDigest
+import java.io.File
+import java.net.URI
+import java.net.HttpURLConnection
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
