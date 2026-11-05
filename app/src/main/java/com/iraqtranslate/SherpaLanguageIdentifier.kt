@@ -12,16 +12,16 @@ class SherpaLanguageIdentifier(
     private val identifier: SpokenLanguageIdentification
 
     init {
-        val whisper = SpokenLanguageIdentificationWhisperConfig.builder()
-            .setEncoder(encoderPath)
-            .setDecoder(decoderPath)
-            .build()
-        val config = SpokenLanguageIdentificationConfig.builder()
-            .setWhisper(whisper)
-            .setNumThreads(2)
-            .setDebug(false)
-            .build()
-        identifier = SpokenLanguageIdentification(config)
+        val whisper = SpokenLanguageIdentificationWhisperConfig(
+            encoder = encoderPath,
+            decoder = decoderPath
+        )
+        val config = SpokenLanguageIdentificationConfig(
+            whisper = whisper,
+            numThreads = 2,
+            debug = false
+        )
+        identifier = SpokenLanguageIdentification(config = config)
     }
 
     @Synchronized
