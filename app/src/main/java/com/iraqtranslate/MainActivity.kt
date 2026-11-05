@@ -32,6 +32,13 @@ class MainActivity : ComponentActivity() {
     @Volatile private var adbConnected = false
     private val io = Executors.newSingleThreadExecutor()
 
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) requestCapture()
+        else status.text = "Playback-audio permission denied. The microphone is not used by this app."
+    }
+
     private val fingerprintCatalogueLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -206,7 +213,7 @@ class MainActivity : ComponentActivity() {
                                 "It does not select MIC, record user speech, or capture screen frames."
                         )
                         .setPositiveButton("Continue") { _, _ ->
-                            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 701)
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()
@@ -397,18 +404,7 @@ class MainActivity : ComponentActivity() {
         hint = hintText
         setText(value)
         inputType = type
-        singleLine = true
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 701 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            requestCapture()
-        } else if (requestCode == 701) {
-            status.text = "Playback-audio permission denied. The microphone is not used by this app."
-        }
+        setSingleLine(true)
     }
 
     private fun requestCapture() {
