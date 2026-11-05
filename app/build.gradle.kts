@@ -1,3 +1,8 @@
+import java.io.File as JavaFile
+import java.net.HttpURLConnection as JavaHttpURLConnection
+import java.net.URI as JavaURI
+import java.security.MessageDigest as JavaMessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -25,7 +30,7 @@ android {
 
 val sherpaAarFile = layout.projectDirectory.file("libs/sherpa-onnx-static-link-onnxruntime-1.12.15.aar").asFile
 val sherpaAarSha256 = "350d4a42a7ccde5a3b7dda207f954d6d57de981fe747106b0e3091e7b947c236"
-fun sha256(file: java.io.File): String = java.security.MessageDigest.getInstance("SHA-256")
+fun sha256(file: JavaFile): String = JavaMessageDigest.getInstance("SHA-256")
     .digest(file.readBytes()).joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
 val downloadSherpaAar by tasks.registering {
@@ -34,10 +39,10 @@ val downloadSherpaAar by tasks.registering {
     doLast {
         if (!sherpaAarFile.isFile || sha256(sherpaAarFile) != sherpaAarSha256) {
             sherpaAarFile.parentFile.mkdirs()
-            val partial = java.io.File(sherpaAarFile.parentFile, sherpaAarFile.name + ".part")
+            val partial = JavaFile(sherpaAarFile.parentFile, sherpaAarFile.name + ".part")
             partial.delete()
             val aarUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-libs/resolve/dea0ed4bc892fe6725c87874bea5c2e7cc946132/android/aar/1.12.15/sherpa-onnx-static-link-onnxruntime-1.12.15.aar?download=true"
-            val connection = java.net.URI(aarUrl).toURL().openConnection() as java.net.HttpURLConnection
+            val connection = JavaURI(aarUrl).toURL().openConnection() as JavaHttpURLConnection
             try {
                 connection.connectTimeout = 20_000
                 connection.readTimeout = 180_000
