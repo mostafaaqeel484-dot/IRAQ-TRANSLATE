@@ -1,95 +1,83 @@
 package com.iraqtranslate
 
 import android.content.Context
-import android.graphics.Color
 import android.graphics.PixelFormat
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
-import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.TextView
 import java.util.concurrent.atomic.AtomicReference
 
-/** Owns the single translation overlay window for the whole application process. */
+/** A single non-interactive TV overlay: no microphone, screenshots, or UI interception. */
 object OverlayController {
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val currentView = AtomicReference<TextView?>(null)
+    private val handler = Handler(Looper.getMainLooper())
+    private val current = AtomicReference<GlassSubtitle?>(null)
 
-    fun isVisible(): Boolean = currentView.get() != null
-
-    fun toggle(context: Context) {
-        if (isVisible()) hide(context) else show(context)
-    }
+    fun isVisible(): Boolean = current.get() != null
+    fun toggle(context: Context) { if (isVisible()) hide(context) else show(context) }
 
     fun show(context: Context): Boolean {
         val app = context.applicationContext
-        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(app)) return false
-        if (isVisible()) return true
-        mainHandler.post {
-            if (currentView.get() != null) return@post
+        if (!Settings.canDrawOverlays(app)) return false
+        handler.post {
+            if (current.get() != null) return@post
             val wm = app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val text = TextView(app).apply {
-                setTextColor(Color.WHITE)
-                setBackgroundColor(0xE6101010.toInt())
-                textSize = 22f
-                text = "IRAQ TRANSLATE"
-                textDirection = TextView.TEXT_DIRECTION_FIRST_STRONG
-                gravity = Gravity.CENTER_VERTICAL or Gravity.END
-                maxLines = 4
-                setPadding(22, 14, 22, 14)
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
+            val style = SubtitleAppearance.get(app)
+            val text = GlassSubtitle(app).apply {
+                applyStyle(style)
+                this.text = RuntimeStatus.caption.ifBlank { "IRAQ TRANSLATE" }
             }
-            val type = if (Build.VERSION.SDK_INT >= 26)
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else WindowManager.LayoutParams.TYPE_PHONE
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
-                type,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                gravity = Gravity.TOP
-                y = 64
+                gravity = Gravity.BOTTOM
+                y = HubUi.dp(app, style.yDp)
             }
             runCatching {
                 wm.addView(text, params)
-                currentView.set(text)
+                current.set(text)
             }
         }
         return true
     }
 
-    fun hide(context: Context) {
+    fun refresh(context: Context) {
         val app = context.applicationContext
-        mainHandler.post {
-            val text = currentView.getAndSet(null) ?: return@post
+        handler.post {
+            val view = current.get() ?: return@post
+            val style = SubtitleAppearance.get(app)
+            view.applyStyle(style)
             val wm = app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            runCatching { wm.removeView(text) }
+            val params = view.layoutParams as? WindowManager.LayoutParams ?: return@post
+            params.y = HubUi.dp(app, style.yDp)
+            runCatching { wm.updateViewLayout(view, params) }
         }
     }
 
-    fun clear() {
-        mainHandler.post { currentView.get()?.text = "" }
+    fun hide(context: Context) {
+        val app = context.applicationContext
+        handler.post {
+            val view = current.getAndSet(null) ?: return@post
+            val wm = app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            runCatching { wm.removeView(view) }
+        }
     }
-
-    /** Ensures the overlay exists before publishing a translated segment. */
+    fun clear() {
+        RuntimeStatus.publishCaption("")
+        handler.post { current.get()?.text = "" }
+    }
     fun update(context: Context, value: String) {
         val clean = ArabicTextNormalizer.displayText(value)
         if (clean.isBlank()) return
-        val app = context.applicationContext
-        if (currentView.get() == null) show(app)
-        mainHandler.post {
-            val text = currentView.get()
-            if (text != null) text.text = clean
-        }
+        RuntimeStatus.publishCaption(clean)
+        if (!isVisible()) show(context)
+        handler.post { current.get()?.text = clean }
     }
 }

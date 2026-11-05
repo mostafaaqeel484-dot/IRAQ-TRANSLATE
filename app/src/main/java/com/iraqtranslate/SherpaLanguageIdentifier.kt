@@ -1,65 +1,42 @@
 package com.iraqtranslate
 
-/**
- * Sherpa-ONNX Whisper language identification.
- * Reflection avoids compile-time builder API mismatches between AAR builds.
- */
+import com.k2fsa.sherpa.onnx.SpokenLanguageIdentification
+import com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig
+import com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationWhisperConfig
+
+/** Whisper-based spoken-language identification, matching the Sherpa API used by the reference APK. */
 class SherpaLanguageIdentifier(
     encoderPath: String,
     decoderPath: String
 ) : AutoCloseable {
-    private val identifier: Any
+    private val identifier: SpokenLanguageIdentification
 
     init {
-        val whisperClass = Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationWhisperConfig")
-        val whisperBuilder = whisperClass.getMethod("builder").invoke(null)
-        whisperBuilder.javaClass.getMethod("setEncoder", String::class.java)
-            .invoke(whisperBuilder, encoderPath)
-        whisperBuilder.javaClass.getMethod("setDecoder", String::class.java)
-            .invoke(whisperBuilder, decoderPath)
-        val whisper = whisperBuilder.javaClass.getMethod("build").invoke(whisperBuilder)
-
-        val configClass = Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig")
-        val configBuilder = configClass.getMethod("builder").invoke(null)
-        configBuilder.javaClass.methods.first {
-            it.name == "setWhisper" && it.parameterCount == 1
-        }.invoke(configBuilder, whisper)
-        configBuilder.javaClass.getMethod(
-            "setNumThreads", Int::class.javaPrimitiveType
-        ).invoke(configBuilder, 2)
-        configBuilder.javaClass.getMethod(
-            "setDebug", Boolean::class.javaPrimitiveType
-        ).invoke(configBuilder, false)
-        val config = configBuilder.javaClass.getMethod("build").invoke(configBuilder)
-
-        val identifierClass = Class.forName(
-            "com.k2fsa.sherpa.onnx.SpokenLanguageIdentification"
-        )
-        identifier = identifierClass.constructors.first {
-            it.parameterCount == 1
-        }.newInstance(config)
+        val whisper = SpokenLanguageIdentificationWhisperConfig.builder()
+            .setEncoder(encoderPath)
+            .setDecoder(decoderPath)
+            .build()
+        val config = SpokenLanguageIdentificationConfig.builder()
+            .setWhisper(whisper)
+            .setNumThreads(2)
+            .setDebug(false)
+            .build()
+        identifier = SpokenLanguageIdentification(config)
     }
 
     @Synchronized
     fun detect(samples: FloatArray, sampleRate: Int = 16000): String {
         require(samples.isNotEmpty()) { "No audio samples for language identification" }
-        val stream = identifier.javaClass.getMethod("createStream").invoke(identifier)
+        val stream = identifier.createStream()
         return try {
-            stream.javaClass.getMethod(
-                "acceptWaveform",
-                FloatArray::class.java,
-                Int::class.javaPrimitiveType
-            ).invoke(stream, samples, sampleRate)
-
-            identifier.javaClass.methods.first {
-                it.name == "compute" && it.parameterCount == 1
-            }.invoke(identifier, stream).toString().trim().lowercase()
+            stream.acceptWaveform(samples, sampleRate)
+            identifier.compute(stream).trim().lowercase()
         } finally {
-            stream.javaClass.getMethod("release").invoke(stream)
+            stream.release()
         }
     }
 
     override fun close() {
-        identifier.javaClass.getMethod("release").invoke(identifier)
+        identifier.release()
     }
 }

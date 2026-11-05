@@ -17,13 +17,15 @@ class AutomaticSubtitleManager(private val context: Context) {
         val cues: List<Cue>,
         @Volatile var scale: Double,
         @Volatile var mediaAtSessionStartMs: Double,
-        @Volatile var confidence: Double = 0.0
+        @Volatile var confidence: Double = 0.0,
+        @Volatile var speechAnchored: Boolean = false
     )
 
     companion object {
         const val PREF_WYZIE_KEY = "wyzie"
         const val PREF_SUBDL_KEY = "subdl"
         const val PREF_OPENSUBTITLES_KEY = "opensubtitles"
+        const val PREF_SUBSOURCE_KEY = "subsource"
         private const val TAG = "AutoSubtitles"
     }
 
@@ -53,6 +55,67 @@ class AutomaticSubtitleManager(private val context: Context) {
     @Volatile private var playerPositionObservedElapsedMs = 0L
 
     fun activeSubtitle(): ActiveSubtitle? = active
+
+    /** Wait for Arabic speech alignment, unless a real player/video clock is available. */
+    fun syncMode(nowElapsedMs: Long = android.os.SystemClock.elapsedRealtime()): SubtitleSyncPolicy.Mode {
+        val current = active
+        val pts = decoderPtsClock.latest()
+        val decoderFresh = pts != null && nowElapsedMs - pts.observedElapsedMs in -2_000L..5_000L
+        val playerFresh = playerPositionMs >= 0L && playerPositionObservedElapsedMs > 0 &&
+            playerPositionState in setOf(2, 3, 6) &&
+            (playerPositionState != 3 || nowElapsedMs - playerPositionObservedElapsedMs <= 5_000L)
+        return SubtitleSyncPolicy.mode(current != null, current?.speechAnchored == true, decoderFresh || playerFresh)
+    }
+    fun canRenderExternal(nowElapsedMs: Long = android.os.SystemClock.elapsedRealtime()): Boolean =
+        SubtitleSyncPolicy.shouldRenderSrt(syncMode(nowElapsedMs))
+    fun syncLabel(): String = when (syncMode()) {
+        SubtitleSyncPolicy.Mode.LIVE_TRANSLATION -> "ترجمة كلام مباشرة • لا يوجد SRT"
+        SubtitleSyncPolicy.Mode.WAITING_FOR_SPEECH -> "ملف SRT جاهز • بانتظار تطابق الكلام التالي"
+        SubtitleSyncPolicy.Mode.SPEECH_ANCHORED -> "SRT متزامن بمحاذاة الكلام"
+        SubtitleSyncPolicy.Mode.PLAYER_CLOCK -> "SRT بالتوقيت المعلن من المشغّل (لم تُتحقق محاذاة الكلام)"
+    }
+
+    /** Recalibrate from next spoken words without deleting selected/downloaded SRT. */
+    @Synchronized fun resyncFromNextSpeech(): Boolean {
+        val current = active ?: return false
+        localAligner.reset()
+        playerSubtitleAligner.reset()
+        decoderSubtitleAligner.reset()
+        syncAnchors.clear()
+        lastReferenceMatch = null
+        current.scale = 1.0
+        current.mediaAtSessionStartMs = 0.0
+        current.confidence = 0.0
+        current.speechAnchored = false
+        return true
+    }
+
+    /** Forget a previously selected title, retaining current recording/session start time. */
+    @Synchronized fun forgetExternalSubtitle() {
+        if (active?.provider == "Local SRT") return
+        active = null
+        activeIdentity = ""
+        dialogueWindow.clear()
+        candidateDialogue.clear()
+        syncAnchors.clear()
+        localAligner.reset()
+        playerSubtitleAligner.reset()
+        decoderSubtitleAligner.reset()
+        lastQuery = ""
+        lastLookupAt = 0L
+    }
+
+    /** Import user-authorized SRT once at session start. No external provider keys are needed. */
+    @Synchronized fun loadManualSubtitles(): Boolean {
+        val name = ManualSubtitleRepository.name(context) ?: return false
+        val raw = ManualSubtitleRepository.content(context) ?: return false
+        val cues = parseSrt(raw)
+        if (cues.size < 2) return false
+        activeIdentity = "local-srt"
+        active = ActiveSubtitle(name, "Local SRT", cues, 1.0, 0.0)
+        Log.i(TAG, "Loaded user SRT cues=${cues.size}")
+        return true
+    }
     @Synchronized fun setSessionStart(elapsedMs: Long) { sessionStartElapsedMs = elapsedMs }
     fun addSpeechSegment(startElapsedMs: Long, endElapsedMs: Long) {
         if (endElapsedMs <= startElapsedMs || sessionStartElapsedMs <= 0L) return
@@ -86,7 +149,7 @@ class AutomaticSubtitleManager(private val context: Context) {
     fun observeDialogueForCandidate(arabicDialogue: String) {
         val clean = arabicDialogue.trim().replace(Regex("\\s+"), " ")
         if (clean.length < 8 || candidateDialogue.lastOrNull() == clean) return
-        candidateDialogue.addLast(clean)
+        candidateDialogue.add(clean)
         while (candidateDialogue.size > 8) candidateDialogue.removeFirst()
     }
 
@@ -115,6 +178,7 @@ class AutomaticSubtitleManager(private val context: Context) {
             current.scale = result.scale
             current.mediaAtSessionStartMs = result.offsetMs
             current.confidence = result.confidence
+            current.speechAnchored = true
             val decoderAtSpeech = decoderPtsClock.positionMs(captureElapsedMs)
             val decoderFresh = decoderPtsClock.latest()?.let {
                 captureElapsedMs - it.observedElapsedMs in -2_000L..5_000L
@@ -131,6 +195,13 @@ class AutomaticSubtitleManager(private val context: Context) {
 
     fun updatePlayerPosition(positionMs: Long, speed: Double, state: Int, observedElapsedMs: Long) {
         if (positionMs < 0 || !speed.isFinite() || speed !in 0.0..4.0) return
+        val previousProjected = playerPositionAt(observedElapsedMs)
+        val jump = previousProjected != null && kotlin.math.abs(positionMs - previousProjected) > 7_000.0
+        if (jump) {
+            // A seek invalidates speech/session-based calibration; the player's new position remains usable.
+            resyncFromNextSpeech()
+            Log.i(TAG, "MediaSession seek detected; waiting for fresh speech anchor")
+        }
         playerPositionMs = positionMs
         playerPositionSpeed = if (state == 2 || state == 6) 0.0 else speed
         playerPositionState = state
@@ -216,8 +287,7 @@ class AutomaticSubtitleManager(private val context: Context) {
         val snapshot = decoderPtsClock.update(ptsUs, observedElapsedMs, speed, playing)
         if (snapshot?.discontinuity == true) {
             // A seek or decoder clock jump invalidates the old player-to-subtitle calibration.
-            playerSubtitleAligner.reset()
-            decoderSubtitleAligner.reset()
+            resyncFromNextSpeech()
             playerPositionMs = -1L
             playerPositionObservedElapsedMs = 0L
             playerPositionState = -1
@@ -240,6 +310,7 @@ class AutomaticSubtitleManager(private val context: Context) {
 
     /** Feed recognized dialogue; Wyzie quote search identifies title/episode and media timestamp. */
     fun identifyAndLoad(dialogue: String, sourceLanguage: String, captureElapsedMs: Long): String? {
+        if (active?.provider == "Local SRT" || MediaSelectionStore.get(context) != null) return null
         // Serialize only the in-memory phrase/throttle update. Network calls must not hold
         // the manager monitor, otherwise subtitle alignment and ticker reads stall.
         val phrase = synchronized(this) {
@@ -280,7 +351,7 @@ class AutomaticSubtitleManager(private val context: Context) {
                 // Keep only the newest translated phrase; older dialogue belongs to the previous title.
                 val newestCandidatePhrase = candidateDialogue.lastOrNull()
                 candidateDialogue.clear()
-                if (!newestCandidatePhrase.isNullOrBlank()) candidateDialogue.addLast(newestCandidatePhrase)
+                if (!newestCandidatePhrase.isNullOrBlank()) candidateDialogue.add(newestCandidatePhrase)
                 syncAnchors.clear()
                 localAligner.reset()
                 playerSubtitleAligner.reset()
@@ -356,6 +427,80 @@ class AutomaticSubtitleManager(private val context: Context) {
         return "$title تم التعرف عليه، لكن لم يُعثر على ملف ترجمة عربية مناسب"
     }
 
+    /** This path works without Wyzie /quote: manually selected IMDb or current XMLTV title. */
+    fun loadSelectedTitle(selection: MediaSelection): String {
+        if (!selection.isUsable()) return "انتهت صلاحية اختيار البرنامج في دليل القنوات"
+        if (active?.provider == "Local SRT") return "الأولوية لملف SRT المحلي"
+        val identity = selection.identity
+        synchronized(this) {
+            if (active != null && activeIdentity == identity) return "${selection.title} • الترجمة محمّلة"
+            if (activeIdentity != identity) {
+                active = null
+                activeIdentity = ""
+                candidateDialogue.clear() // Old speech must not reject a new programme's SRT.
+                syncAnchors.clear()
+                localAligner.reset()
+                playerSubtitleAligner.reset()
+                decoderSubtitleAligner.reset()
+            }
+        }
+        val title = selection.title
+        val epgHit = if (selection.source == "epg" && selection.imdbId.isBlank()) {
+            // EPG programme titles may be news, ads or unrelated shows. Accept ONLY one exact title match.
+            runCatching { TitleMatchRules.uniqueExactMatch(title, ImdbTitleLookup.search(title).map {
+                TitleMatchRules.Hit(it.id, it.title, it.year)
+            }) }.getOrNull()
+        } else null
+        val imdb = (selection.imdbId.takeIf { it.matches(Regex("tt\\d+")) } ?: epgHit?.id).orEmpty()
+        val season = selection.season
+        val episode = selection.episode
+        val year = selection.year.takeIf { it > 0 } ?: epgHit?.year ?: 0
+        val wyzie = SubtitleKeyStore.get(context, PREF_WYZIE_KEY).trim()
+        // Audio/VAD Wyzie sync is optional and its endpoint is not proven by the reference APK.
+        if (imdb.isNotBlank() && wyzie.isNotBlank()) {
+            syncWyzie(imdb, season, episode, wyzie)?.let { body ->
+                val cues = parseSrt(body)
+                if (cues.size >= 2 && activateSubtitle(title, "Wyzie Synced", cues, identity))
+                    return "$title • تم تحميل ملف Wyzie Synced؛ بانتظار التزامن مع الصوت"
+            }
+            searchWyzie(imdb, season, episode, wyzie)?.let { body ->
+                val cues = parseSrt(body.first)
+                if (cues.size >= 2 && activateSubtitle(title, "Wyzie", cues, identity))
+                    return "$title • تم تحميل ملف Wyzie؛ بانتظار محاذاة الصوت"
+            }
+        }
+        val openKey = SubtitleKeyStore.get(context, PREF_OPENSUBTITLES_KEY).trim()
+        if (imdb.isNotBlank() && openKey.isNotBlank()) {
+            searchOpenSubtitles(imdb, season, episode, openKey)?.let { raw ->
+                val cues = parseSrt(raw)
+                if (cues.size >= 2 && activateSubtitle(title, "OpenSubtitles", cues, identity))
+                    return "$title • تم تحميل OpenSubtitles؛ بانتظار محاذاة الصوت"
+            }
+        }
+        val subdlKey = SubtitleKeyStore.get(context, PREF_SUBDL_KEY).trim()
+        if (subdlKey.isNotBlank()) {
+            searchSubDl(title, season, episode, year, subdlKey)?.let { raw ->
+                val cues = parseSrt(raw)
+                if (cues.size >= 2 && activateSubtitle(title, "SubDL", cues, identity))
+                    return "$title • تم تحميل SubDL؛ بانتظار محاذاة الصوت"
+            }
+        }
+        val sourceKey = SubtitleKeyStore.get(context, PREF_SUBSOURCE_KEY).trim()
+        if (sourceKey.isNotBlank()) {
+            searchSubSource(title, imdb, season, episode, sourceKey)?.let { raw ->
+                val cues = parseSrt(raw)
+                if (cues.size >= 2 && activateSubtitle(title, "SubSource", cues, identity))
+                    return "$title • تم تحميل SubSource؛ بانتظار محاذاة الصوت"
+            }
+        }
+        searchSubtitleCat(title, season, episode, year)?.let { raw ->
+            val cues = parseSrt(raw)
+            if (cues.size >= 2 && activateSubtitle(title, "SubtitleCat", cues, identity))
+                return "$title • تم تحميل SubtitleCat؛ بانتظار محاذاة الصوت"
+        }
+        return "$title • لم يتوفر ملف SRT عربي صالح لدى المزودين المُهيئين؛ ستستمر الترجمة الحية"
+    }
+
     @Synchronized
     private fun activateSubtitle(title: String, provider: String, cues: List<Cue>, identity: String): Boolean {
         if (!candidateLooksUsable(cues, title, provider)) return false
@@ -368,6 +513,7 @@ class AutomaticSubtitleManager(private val context: Context) {
 
     fun cueAt(captureElapsedMs: Long): String? {
         val sub = active ?: return null
+        if (!canRenderExternal(captureElapsedMs)) return null
         val pts = decoderPtsClock.latest()
         val decoderPtsFresh = pts != null && captureElapsedMs - pts.observedElapsedMs in -2_000L..5_000L
         val observedAt = playerPositionObservedElapsedMs
@@ -389,7 +535,10 @@ class AutomaticSubtitleManager(private val context: Context) {
             else -> ((captureElapsedMs - sessionStartElapsedMs).coerceAtLeast(0L) * sub.scale +
                 sub.mediaAtSessionStartMs).toLong()
         }
-        return sub.cues.firstOrNull { mediaMs >= it.startMs && mediaMs <= it.endMs }?.text
+        val adjustedMediaMs = SubtitleTimingMath.effectiveMediaTime(
+            mediaMs, SubtitleTimingStore.get(context)
+        )
+        return sub.cues.firstOrNull { adjustedMediaMs >= it.startMs && adjustedMediaMs <= it.endMs }?.text
     }
 
     private fun playerPositionAt(elapsedMs: Long): Double? {
@@ -548,6 +697,43 @@ class AutomaticSubtitleManager(private val context: Context) {
     }
 
 
+    /** Official SubSource v1 routes, authenticated with the user's X-API-Key.
+     * Response payload schemas must be verified with a real account before production use.
+     */
+    private fun searchSubSource(title: String, imdb: String, season: Int, episode: Int, key: String): String? {
+        val headers = mapOf("X-API-Key" to key, "Accept" to "application/json")
+        val searchUrl = "https://api.subsource.net/api/v1/movies/search?query=${enc(title)}"
+        val moviesRoot = requestJsonWithHeaders(searchUrl, headers) as? JSONObject ?: return null
+        val movies = moviesRoot.optJSONArray("data") ?: moviesRoot.optJSONArray("results") ?: return null
+        var movieId: String? = null
+        for (i in 0 until minOf(movies.length(), 20)) {
+            val m = movies.optJSONObject(i) ?: continue
+            val candidateImdb = m.optString("imdb_id", m.optString("imdbId"))
+            val candidateTitle = m.optString("title", m.optString("name"))
+            if ((imdb.isNotBlank() && candidateImdb == imdb) ||
+                (candidateTitle.trim().equals(title.trim(), ignoreCase = true))) {
+                movieId = m.optString("id").takeIf { it.isNotBlank() }
+                break
+            }
+        }
+        val id = movieId ?: return null
+        val url = buildString {
+            append("https://api.subsource.net/api/v1/subtitles?movie_id=").append(enc(id))
+            append("&language=ar")
+            if (season > 0 && episode > 0) append("&season=$season&episode=$episode")
+        }
+        val root = requestJsonWithHeaders(url, headers) as? JSONObject ?: return null
+        val rows = root.optJSONArray("data") ?: root.optJSONArray("subtitles") ?: return null
+        for (i in 0 until minOf(rows.length(), 10)) {
+            val entry = rows.optJSONObject(i) ?: continue
+            val subtitleId = entry.optString("id").takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,60}")) } ?: continue
+            val download = "https://api.subsource.net/api/v1/subtitles/$subtitleId/download"
+            val bytes = requestBytesWithHeaders(download, headers) ?: continue
+            extractSubtitleText(bytes, "subsource")?.takeIf { it.contains("-->") }?.let { return it }
+        }
+        return null
+    }
+
     private fun searchSubtitleCat(title: String, season: Int, episode: Int, year: Int): String? {
         val episodeTag = if (season > 0 && episode > 0) " S${season}E${episode}" else ""
         val query = (title + (if (year > 0) " $year" else "") + episodeTag).trim()
@@ -604,7 +790,7 @@ class AutomaticSubtitleManager(private val context: Context) {
                 var entry = zip.nextEntry
                 while (entry != null) {
                     if (!entry.isDirectory && entry.name.substringAfterLast('.', "").lowercase() in setOf("srt", "vtt")) {
-                        return@use zip.readBytes().toString(Charsets.UTF_8)
+                        return@use readBounded(zip, 6_000_000).toString(Charsets.UTF_8)
                     }
                     entry = zip.nextEntry
                 }
@@ -676,6 +862,37 @@ class AutomaticSubtitleManager(private val context: Context) {
         return runCatching { if (body.trimStart().startsWith("[")) JSONArray(body) else JSONObject(body) }.getOrNull()
     }
 
+    private fun requestBytesWithHeaders(url: String, headers: Map<String, String>): ByteArray? {
+        return try {
+            val parsed = URL(url)
+            if (parsed.protocol != "https" || parsed.host != "api.subsource.net") null else {
+                val c = parsed.openConnection() as HttpURLConnection
+                c.connectTimeout = 12_000
+                c.readTimeout = 20_000
+                headers.forEach { (name, value) -> c.setRequestProperty(name, value) }
+                try {
+                    if (c.responseCode !in 200..299) null
+                    else c.inputStream.use { input -> readBounded(input, 6_000_000) }
+                } finally { c.disconnect() }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "SubSource download failed", t)
+            null
+        }
+    }
+
+    private fun readBounded(input: java.io.InputStream, limit: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            check(out.size() + n <= limit) { "Subtitle response exceeds $limit bytes" }
+            out.write(buffer, 0, n)
+        }
+        return out.toByteArray()
+    }
+
     private fun requestText(url: String): String? = requestBytes(url)?.toString(Charsets.UTF_8)
 
     private fun requestBytes(url: String): ByteArray? = try {
@@ -688,7 +905,7 @@ class AutomaticSubtitleManager(private val context: Context) {
             if (c.responseCode !in 200..299) {
                 Log.w(TAG, "Subtitle provider HTTP ${c.responseCode}: ${URL(url).host}")
                 null
-            } else c.inputStream.use { it.readBytes() }
+            } else c.inputStream.use { readBounded(it, 6_000_000) }
         } finally { c.disconnect() }
     } catch (t: Throwable) {
         Log.w(TAG, "Subtitle request failed", t)

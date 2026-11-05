@@ -20,15 +20,13 @@ class Media3DecoderPtsBridge(
 
     fun attach() {
         if (attached) return
-        player.setVideoFrameMetadataListener(this)
+        player.addVideoFrameMetadataListener(this)
         attached = true
     }
 
     fun detach() {
         if (!attached) return
-        player.setVideoFrameMetadataListener(
-            VideoFrameMetadataListener { _, _, _, _ -> }
-        )
+        player.removeVideoFrameMetadataListener(this)
         attached = false
     }
 

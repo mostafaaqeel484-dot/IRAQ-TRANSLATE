@@ -32,13 +32,6 @@ class MainActivity : ComponentActivity() {
     @Volatile private var adbConnected = false
     private val io = Executors.newSingleThreadExecutor()
 
-    private val audioPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) requestCapture()
-        else status.text = "Playback-audio permission denied. The microphone is not used by this app."
-    }
-
     private val fingerprintCatalogueLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -81,7 +74,7 @@ class MainActivity : ComponentActivity() {
         installer = SpeechModelInstaller(this)
         status = TextView(this).apply {
             textSize = 17f
-            text = "IRAQ TRANSLATE 1.0.9\nIPTV playback audio → speech recognition → Arabic captions"
+            text = "IRAQ TRANSLATE 1.2.0\nIPTV playback audio → speech recognition → Arabic captions"
             setPadding(0, 0, 0, 16)
         }
 
@@ -213,7 +206,7 @@ class MainActivity : ComponentActivity() {
                                 "It does not select MIC, record user speech, or capture screen frames."
                         )
                         .setPositiveButton("Continue") { _, _ ->
-                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 701)
                         }
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()
@@ -338,12 +331,13 @@ class MainActivity : ComponentActivity() {
             setPadding(0, 24, 0, 8)
         }
         val subtitleHelp = TextView(this).apply {
-            text = "The app identifies the title/episode from playback dialogue, then searches Arabic subtitles in Wyzie, OpenSubtitles.com, SubDL and SubtitleCat. Playback VAD feeds Wyzie Synced for audio alignment and FPS correction (Wyzie Pro key required); quote timestamps provide local drift correction when Pro sync is unavailable. SubtitleCat is accessed through its public HTML search pages, so markup changes or anti-bot protection can interrupt it. Add your own API keys; do not publish them."
+            text = "Use SearchActivity to choose IMDb title, or select an XMLTV channel; optional /quote dialogue detection is experimental. Arabic subtitle search uses your own API keys for Wyzie, OpenSubtitles, SubDL, SubSource (experimental) and public SubtitleCat search. Playback VAD feeds Wyzie Synced for audio alignment and FPS correction (Wyzie Pro key required); quote timestamps provide local drift correction when Pro sync is unavailable. SubtitleCat is accessed through its public HTML search pages, so markup changes or anti-bot protection can interrupt it. Add your own API keys; do not publish them."
             setPadding(0, 0, 0, 8)
         }
         val wyzieKey = edit("Wyzie API key (Pro enables audio/FPS sync)", SubtitleKeyStore.get(this, AutomaticSubtitleManager.PREF_WYZIE_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val openSubtitlesKey = edit("OpenSubtitles.com API key", SubtitleKeyStore.get(this, AutomaticSubtitleManager.PREF_OPENSUBTITLES_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val subdlKey = edit("SubDL API key (fallback)", SubtitleKeyStore.get(this, AutomaticSubtitleManager.PREF_SUBDL_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val subsourceKey = edit("SubSource API key (experimental; user-provided)", SubtitleKeyStore.get(this, AutomaticSubtitleManager.PREF_SUBSOURCE_KEY), InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val importFingerprintCatalogue = Button(this).apply {
             text = "Import reference audio fingerprint CSV"
             setOnClickListener {
@@ -357,6 +351,7 @@ class MainActivity : ComponentActivity() {
                 SubtitleKeyStore.put(this@MainActivity, AutomaticSubtitleManager.PREF_WYZIE_KEY, wyzieKey.text.toString().trim())
                 SubtitleKeyStore.put(this@MainActivity, AutomaticSubtitleManager.PREF_OPENSUBTITLES_KEY, openSubtitlesKey.text.toString().trim())
                 SubtitleKeyStore.put(this@MainActivity, AutomaticSubtitleManager.PREF_SUBDL_KEY, subdlKey.text.toString().trim())
+                SubtitleKeyStore.put(this@MainActivity, AutomaticSubtitleManager.PREF_SUBSOURCE_KEY, subsourceKey.text.toString().trim())
                 status.text = "Subtitle provider keys saved on this device. Automatic title detection is enabled during playback."
             }
         }
@@ -371,6 +366,7 @@ class MainActivity : ComponentActivity() {
             addView(wyzieKey)
             addView(openSubtitlesKey)
             addView(subdlKey)
+            addView(subsourceKey)
             addView(saveSubtitleKeys)
             addView(importFingerprintCatalogue)
             addView(TextView(this@MainActivity).apply {
@@ -404,7 +400,18 @@ class MainActivity : ComponentActivity() {
         hint = hintText
         setText(value)
         inputType = type
-        setSingleLine(true)
+        singleLine = true
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 701 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            requestCapture()
+        } else if (requestCode == 701) {
+            status.text = "Playback-audio permission denied. The microphone is not used by this app."
+        }
     }
 
     private fun requestCapture() {

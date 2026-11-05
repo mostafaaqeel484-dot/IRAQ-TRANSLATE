@@ -1,3 +1,7 @@
+**NEW: v1.2.0** — see [`README_1.2.0_AR.md`](README_1.2.0_AR.md) for current Arabic build guide, features and limitations. Historical notes below describe earlier versions.
+
+> **نسخة 1.1.0:** ابدأ بملف [README_NEW_SOURCE_AR.md](README_NEW_SOURCE_AR.md) لفهم الواجهة الجديدة، الربط، البناء وحدود الاختبارات. بقية هذا الملف وثائق سورس 1.0.9 المحفوظة.
+
 # IRAQ TRANSLATE 1.0.5
 
 Android TV speech-to-Arabic subtitle source project based on the reverse-engineering findings from `AI-Translator(2).apk`.

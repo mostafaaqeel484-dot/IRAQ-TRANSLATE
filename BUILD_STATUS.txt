@@ -1,0 +1,2 @@
+APK not built in this environment: Android SDK and Gradle unavailable; no external repositories accessible.
+Included automated GitHub Actions build workflow and local build scripts.

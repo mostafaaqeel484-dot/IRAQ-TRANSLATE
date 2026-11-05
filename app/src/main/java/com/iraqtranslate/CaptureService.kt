@@ -38,6 +38,8 @@ class CaptureService : Service() {
         const val ACTION_START = "com.iraqtranslate.START"
         const val ACTION_STOP = "com.iraqtranslate.STOP"
         const val ACTION_START_ADB = "com.iraqtranslate.START_ADB"
+        const val ACTION_REFRESH_SELECTION = "com.iraqtranslate.REFRESH_MEDIA_SELECTION"
+        const val ACTION_RESYNC_SPEECH = "com.iraqtranslate.RESYNC_SPEECH"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         private const val CHANNEL_ID = "iraq_translate_capture"
@@ -75,13 +77,68 @@ class CaptureService : Service() {
     private val translator = TranslationEngine()
     private val subtitleManager by lazy { AutomaticSubtitleManager(this) }
     private val subtitleLookupExecutor = Executors.newSingleThreadExecutor()
+    @Volatile private var requestedMediaIdentity: String = ""
+    @Volatile private var lastEpgCheckElapsedMs = 0L
+
+    private fun updateEpgWhenProgrammeChanges(nowElapsedMs: Long) {
+        if (nowElapsedMs - lastEpgCheckElapsedMs < 30_000L) return
+        lastEpgCheckElapsedMs = nowElapsedMs
+        val previous = MediaSelectionStore.get(this)
+        if (previous != null && previous.source != "epg") return // User explicitly chose a film.
+        if (EpgRepository.selectedChannel(this).isBlank()) return
+        val current = EpgRepository.currentlyPlaying(this)
+        if (current == null) {
+            if (previous?.source == "epg" || requestedMediaIdentity.startsWith("title:")) {
+                MediaSelectionStore.clear(this)
+                requestedMediaIdentity = ""
+                subtitleLookupExecutor.execute { subtitleManager.forgetExternalSubtitle() }
+            }
+            return
+        }
+        if (previous?.title == current.title && previous.expiresAtMs == current.endMs) return
+        MediaSelectionStore.save(this, MediaSelection(
+            title = current.title, source = "epg", expiresAtMs = current.endMs
+        ))
+        requestedMediaIdentity = ""
+        Log.i(TAG, "XMLTV programme changed: ${current.title}")
+    }
+
+    private fun requestSelectedTitle(force: Boolean = false) {
+        if (!running) return
+        val selected = MediaSelectionStore.get(this)
+        if (selected == null) {
+            if (force) {
+                requestedMediaIdentity = ""
+                subtitleLookupExecutor.execute { subtitleManager.forgetExternalSubtitle() }
+            }
+            return
+        }
+        if (!force && requestedMediaIdentity == selected.identity) return
+        requestedMediaIdentity = selected.identity
+        subtitleLookupExecutor.execute {
+            if (!running) return@execute
+            runCatching { subtitleManager.loadSelectedTitle(selected) }
+                .onSuccess { Log.i(TAG, "Selected title lookup: $it") }
+                .onFailure { Log.w(TAG, "Selected title lookup failed", it) }
+        }
+    }
     private val mediaSessionPoller = Executors.newSingleThreadScheduledExecutor()
     @Volatile private var mediaSessionPollFuture: java.util.concurrent.ScheduledFuture<*>? = null
     private val subtitleTickerHandler = Handler(Looper.getMainLooper())
     private val subtitleTicker = object : Runnable {
         override fun run() {
             if (running) {
-                if (subtitleManager.activeSubtitle() != null) {
+                val now = SystemClock.elapsedRealtime()
+                updateEpgWhenProgrammeChanges(now)
+                requestSelectedTitle()
+                val activeSubtitle = subtitleManager.activeSubtitle()
+                val selected = MediaSelectionStore.get(this@CaptureService)
+                RuntimeStatus.media(
+                    activeSubtitle?.title ?: selected?.title,
+                    activeSubtitle?.provider ?: selected?.source,
+                    activeSubtitle?.confidence, subtitleManager.syncLabel()
+                )
+                if (activeSubtitle != null && subtitleManager.canRenderExternal(now)) {
                     val cue = subtitleManager.cueAt(SystemClock.elapsedRealtime())
                     if (cue.isNullOrBlank()) OverlayController.clear()
                     else OverlayController.update(this@CaptureService, cue)
@@ -129,6 +186,16 @@ class CaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> stopCapture()
+            ACTION_REFRESH_SELECTION -> if (running) requestSelectedTitle(force = true) else stopSelf()
+            ACTION_RESYNC_SPEECH -> {
+                if (running) {
+                    val updated = subtitleManager.resyncFromNextSpeech()
+                    if (updated) {
+                        OverlayController.clear()
+                        Log.i(TAG, "Speech re-sync requested; keeping current SRT, waiting for next dialogue")
+                    }
+                } else stopSelf()
+            }
             ACTION_START_ADB -> {
                 if (Build.VERSION.SDK_INT < 34) {
                     Log.w(TAG, "ADB Echo Reference foreground mode requires Android 14+ specialUse service type")
@@ -207,6 +274,7 @@ class CaptureService : Service() {
             resampler = if (captureInput?.channels == 2) Fir63Resampler() else null
 
             running = true
+            RuntimeStatus.started("Android playback capture")
         subtitleTickerHandler.removeCallbacks(subtitleTicker)
         subtitleTickerHandler.post(subtitleTicker)
             captureInput!!.audioRecord.startRecording()
@@ -246,6 +314,7 @@ class CaptureService : Service() {
         if (running) stopCapture()
         val generation = ++captureGeneration
         running = true
+        RuntimeStatus.started("ADB Echo Reference")
         subtitleTickerHandler.removeCallbacks(subtitleTicker)
         subtitleTickerHandler.post(subtitleTicker)
         worker = Thread({
@@ -383,6 +452,7 @@ class CaptureService : Service() {
                         val inputDurationMs = inputFrames * 1000L / input.sampleRate
                         ((playbackClock?.elapsedMsForFrame(stamp.framePosition) ?: SystemClock.elapsedRealtime()) - inputDurationMs).coerceAtLeast(0L)
                     } else (SystemClock.elapsedRealtime() - durationMs).coerceAtLeast(0L)
+                    RuntimeStatus.audioObserved(SystemClock.elapsedRealtime())
                     if (!queue.offer(CapturedPcmChunk(pcm, captureStart))) {
                         captureQueueFailure = "PCM queue overrun: processing could not keep up with live playback; session stopped to prevent timestamp corruption"
                         Log.e(TAG, captureQueueFailure!!)
@@ -420,6 +490,7 @@ class CaptureService : Service() {
                     if (pcm.isEmpty()) continue
                     val durationMs = pcm.size * 1000L / 16_000L
                     val captureStart = (SystemClock.elapsedRealtime() - durationMs).coerceAtLeast(0L)
+                    RuntimeStatus.audioObserved(SystemClock.elapsedRealtime())
                     if (!queue.offer(CapturedPcmChunk(pcm, captureStart))) {
                         captureQueueFailure = "PCM queue overrun: ADB Echo Reference capture stopped to prevent silent audio loss"
                         Log.e(TAG, captureQueueFailure!!)
@@ -453,6 +524,8 @@ class CaptureService : Service() {
         audioFingerprintEngine.reset()
         var sessionStartElapsedMs = 0L
         subtitleManager.clear()
+        val localSubtitlesReady = runCatching { subtitleManager.loadManualSubtitles() }.getOrDefault(false)
+        if (localSubtitlesReady) Log.i(TAG, "Using user-imported SRT subtitle for this session")
         val catalogueEntries = runCatching { subtitleManager.loadReferenceFingerprintCatalogue() }.getOrDefault(0)
         Log.i(TAG, "Reference fingerprint catalogue entries=$catalogueEntries")
 
@@ -615,13 +688,15 @@ class CaptureService : Service() {
                 }
 
                 val external = subtitleManager.activeSubtitle()
-                if (external != null) {
-                    if (!isFinalResult || !hasReliableTimestamp) return@execute
+                if (external != null && isFinalResult && hasReliableTimestamp) {
                     val confidence = subtitleManager.observeTranslatedDialogue(arabic, audioElapsedMs)
                     Log.d(TAG, "Subtitle word alignment confidence=${"%.3f".format(confidence)}; ${subtitleManager.alignmentStatus()}")
+                }
+                if (external != null && subtitleManager.canRenderExternal()) {
                     subtitleManager.cueAt(SystemClock.elapsedRealtime())?.let { OverlayController.update(this, it) }
                     return@execute
                 }
+                // Until SRT has an audio/player anchor, keep displaying live Arabic captions.
                 val caption = subtitleSynchronizer.append(arabic, audioElapsedMs)
                 Log.i(TAG, "Arabic caption: $caption")
                 OverlayController.update(this, caption)
@@ -662,6 +737,9 @@ class CaptureService : Service() {
     @Synchronized
     private fun stopCapture() {
         running = false
+        RuntimeStatus.stopped()
+        requestedMediaIdentity = ""
+        lastEpgCheckElapsedMs = 0L
         mediaSessionPollFuture?.cancel(true)
         mediaSessionPollFuture = null
         subtitleTickerHandler.removeCallbacks(subtitleTicker)
@@ -698,6 +776,8 @@ class CaptureService : Service() {
         projection = null
         subtitleSynchronizer.reset()
         subtitleManager.clear()
+        OverlayController.clear()
+        OverlayController.hide(this)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
