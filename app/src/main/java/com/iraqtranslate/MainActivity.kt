@@ -400,7 +400,7 @@ class MainActivity : ComponentActivity() {
         hint = hintText
         setText(value)
         inputType = type
-        singleLine = true
+        setSingleLine(true)
     }
 
     override fun onRequestPermissionsResult(
