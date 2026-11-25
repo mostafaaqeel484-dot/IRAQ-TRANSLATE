@@ -1,10 +1,18 @@
-# AI Translate V0.15 — dual APK (experimental)
+# AI Translate V0.15.1 — Live Audio + OCR (experimental)
 
 This is a **new, independent V0.15 implementation** placed in the existing Gazal repository, not a binary update of the separately pictured V0.14 source (that exact source was unavailable). Existing `:app` is untouched.
 
 ## Outputs
 - `:v015:assembleMobileDebug` → `v015/build/outputs/apk/mobile/debug/v015-mobile-debug.apk`
 - `:v015:assembleMt5889Debug` → `v015/build/outputs/apk/mt5889/debug/v015-mt5889-debug.apk`
+
+## Live audio — new in 0.15.1
+- Continuous local **AudioRecord 16kHz PCM16** capture from eligible game/media playback via Android AudioPlaybackCapture and user MediaProjection consent.
+- Long-running microphone capture for an external audio source (e.g. listening to a television using phone or microphone-equipped device).
+- On-device streaming English/Japanese speech-to-text through Vosk; official 40MB/48MB models downloaded once, then cached in private app storage. No raw audio uploaded.
+- Final ASR phrases and throttled partial recognition translated to Arabic and displayed persistently over other apps. No strobing between partial updates.
+- The same six translation engines apply to speech-transcribed text. If a cloud provider was explicitly chosen, speech-to-text **text**, not raw audio, may leave the device.
+- **Limits**: Native HDMI, secure playback, DVB TV audio, and apps with disabled AudioPlaybackCapture may not be capturable. No privileged OS bypass is implemented. Microphone option is an explicit fallback. Real-device verification pending.
 
 ## Implemented
 - Android 10+ screen capture with **explicit MediaProjection consent per session**, and foreground service for API 34.
