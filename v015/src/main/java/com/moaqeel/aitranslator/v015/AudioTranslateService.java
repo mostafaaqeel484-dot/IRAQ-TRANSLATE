@@ -10,6 +10,11 @@ import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.app.PendingIntent;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.RelativeSizeSpan;
+import android.text.style.ForegroundColorSpan;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
@@ -56,6 +61,11 @@ public final class AudioTranslateService extends Service {
     private String language = "en";
     private String mode = MODE_MIC;
     private volatile String statusText = "";
+    // Xiaomi-inspired UX only: original independent caption renderer, no vendor SDK or copied classes.
+    private boolean bilingual = true;
+    private boolean captionTop = false;
+    private int captionSize = 28;
+    private String lastOriginal = "";
 
     @Override public void onCreate() {
         super.onCreate();
@@ -75,7 +85,13 @@ public final class AudioTranslateService extends Service {
             stopSelf(); return START_NOT_STICKY;
         }
         mode = MODE_PLAYBACK.equals(intent.getStringExtra("mode")) ? MODE_PLAYBACK : MODE_MIC;
-        language = "ja".equals(new SecureSettings(this).get("source", "en")) ? "ja" : "en";
+        SecureSettings captionPrefs = new SecureSettings(this);
+        language = "ja".equals(captionPrefs.get("source", "en")) ? "ja" : "en";
+        bilingual = "on".equals(captionPrefs.get("caption_bilingual", "on"));
+        captionTop = "top".equals(captionPrefs.get("caption_position", "bottom"));
+        try { captionSize = Math.max(18, Math.min(38, Integer.parseInt(
+                captionPrefs.get("caption_size", BuildConfig.TV_MODE ? "32" : "24")))); }
+        catch (NumberFormatException ignored) { captionSize = BuildConfig.TV_MODE ? 32 : 24; }
         try {
             int type = MODE_PLAYBACK.equals(mode)
                 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
@@ -144,8 +160,8 @@ public final class AudioTranslateService extends Service {
             if (recording.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
                 throw new IllegalStateException("Audio capture was not permitted");
             notifyStatus(MODE_PLAYBACK.equals(mode)
-                ? "نسمع صوت التطبيقات المسموح بالتقاطها (الألعاب/الميديا)"
-                : "نسمع الميكروفون باستمرار ونترجم الكلام");
+                ? "المصدر: صوت النظام (الألعاب/الفيديو المسموح فقط)"
+                : "المصدر: الميكروفون (ترجمة الصوت الخارجي)");
             byte[] chunk = new byte[3200]; // 100ms mono @ 16kHz 16-bit
             String lastPartial = "";
             long previousPartialTime = 0;
@@ -201,14 +217,15 @@ public final class AudioTranslateService extends Service {
     }
     private void translatePhrase(String original, boolean partial) {
         long seq = translationRequest.incrementAndGet();
-        // Keep previous Arabic subtitle visible while waiting for the next translation.
+        lastOriginal = original;
+        // Keep prior subtitle visible while the next phrase is recognized and translated.
         translator.translate(original, language, (arabic, engine) -> {
             if (!active || seq != translationRequest.get()) return;
             if ("error".equals(engine)) {
                 notifyStatus("خطأ الترجمة: " + arabic);
                 return;
             }
-            if (!arabic.trim().isEmpty()) showText(arabic);
+            if (!arabic.trim().isEmpty()) showCaption(original, arabic);
         });
     }
     private void showOverlay() {
@@ -217,7 +234,7 @@ public final class AudioTranslateService extends Service {
             if (!active || overlay != null || !Settings.canDrawOverlays(this)) return;
             try {
                 TextView label = new TextView(this);
-                label.setTextSize(BuildConfig.TV_MODE ? 30f : 22f);
+                label.setTextSize(captionSize);
                 label.setTextColor(Color.WHITE);
                 label.setGravity(Gravity.CENTER);
                 label.setTextDirection(View.TEXT_DIRECTION_RTL);
@@ -233,13 +250,33 @@ public final class AudioTranslateService extends Service {
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT);
-                p.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+                p.gravity = (captionTop ? Gravity.TOP : Gravity.BOTTOM) | Gravity.CENTER_HORIZONTAL;
                 p.y = BuildConfig.TV_MODE ? 48 : 78;
                 windows.addView(label, p);
                 label.setVisibility(View.GONE);
                 overlay = label;
             } catch (Exception e) { notifyStatus("صلاحية الترجمة العائمة غير متاحة"); }
         });
+    }
+    /** Draw original speech in smaller gold type and Arabic translation in white; always user controlled. */
+    private void showCaption(String original, String arabic) {
+        if (!active) return;
+        if (!bilingual || original == null || original.isEmpty()) {
+            showText(arabic);
+            return;
+        }
+        String source = ("ja".equals(language) ? "日本語" : "English");
+        String heading = source + ":  " + original.replace('\n', ' ');
+        SpannableStringBuilder content = new SpannableStringBuilder(heading + "\n" + arabic);
+        content.setSpan(new RelativeSizeSpan(0.66f), 0, heading.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        content.setSpan(new ForegroundColorSpan(0xFFFFD77A), 0, heading.length(),
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (overlay == null) showOverlay();
+        if (overlay != null) {
+            overlay.setMaxLines(BuildConfig.TV_MODE ? 5 : 6);
+            overlay.setText(content);
+            overlay.setVisibility(View.VISIBLE);
+        }
     }
     private void showText(String text) {
         if (!active) return;
@@ -254,6 +291,11 @@ public final class AudioTranslateService extends Service {
             .setContentTitle("AI Translate — Live Speech")
             .setContentText(message)
             .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .addAction(new Notification.Action.Builder(
+                android.R.drawable.ic_media_pause, "إيقاف الترجمة",
+                PendingIntent.getService(this, 152, new Intent(this, AudioTranslateService.class)
+                    .setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT))
+                .build())
             .setOngoing(true).build();
     }
     private void notifyStatus(String message) {
