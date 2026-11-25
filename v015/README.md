@@ -1,4 +1,4 @@
-# AI Translate V0.15.1 — Live Audio + OCR (experimental)
+# AI Translate V0.15.2 — Xiaomi-inspired Live Audio + OCR (experimental)
 
 This is a **new, independent V0.15 implementation** placed in the existing Gazal repository, not a binary update of the separately pictured V0.14 source (that exact source was unavailable). Existing `:app` is untouched.
 
@@ -6,7 +6,17 @@ This is a **new, independent V0.15 implementation** placed in the existing Gazal
 - `:v015:assembleMobileDebug` → `v015/build/outputs/apk/mobile/debug/v015-mobile-debug.apk`
 - `:v015:assembleMt5889Debug` → `v015/build/outputs/apk/mt5889/debug/v015-mt5889-debug.apk`
 
-## Live audio — new in 0.15.1
+## Xiaomi AI Subtitles 5.12.6.60 study — independent feature parity
+Reference APK uploaded by user had package `com.xiaomi.aiasst.vision`, version 5.12.6.60, min SDK 29, target SDK 36, `android.uid.system` shared user identity and Xiaomi-only services. It is privileged OEM software, so its private implementation and native libraries are not reused or bundled.
+This independent update recreates useful behavior with supported public Android APIs:
+- Explicit **system playback audio / microphone** source options, and plain-language explanations when capturing other app audio is prohibited.
+- Toggle original-language speech **plus Arabic translation** (two-line captions); original rendered smaller and gold.
+- Adjustable text sizes 20–38sp; floating caption at top or bottom; TV preset larger, fully navigable using remote.
+- One-tap Stop action in persistent foreground notification.
+- Native ARM64 mobile and ARM32/ARM64 MT5889 builds; obsolete x86/MIPS libraries excluded to reduce size.
+- No privileged capture bypass, no hidden Xiaomi SDK, user must explicitly grant capture/overlay permissions.
+
+## Live audio — in 0.15.1
 - Continuous local **AudioRecord 16kHz PCM16** capture from eligible game/media playback via Android AudioPlaybackCapture and user MediaProjection consent.
 - Long-running microphone capture for an external audio source (e.g. listening to a television using phone or microphone-equipped device).
 - On-device streaming English/Japanese speech-to-text through Vosk; official 40MB/48MB models downloaded once, then cached in private app storage. No raw audio uploaded.
