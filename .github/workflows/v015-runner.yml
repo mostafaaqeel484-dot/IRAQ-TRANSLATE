@@ -1,4 +1,4 @@
-name: AI Translate V0.15 Mobile + MT5889 Build
+name: AI Translate V0.15.1 Live Audio Mobile + MT5889 Build
 on:
   push:
     branches: ['feature/ai-translate-v015-dual-build']
@@ -37,13 +37,13 @@ jobs:
           sha256sum v015/build/outputs/apk/*/debug/*.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: AI-Translate-V015-Mobile-APK
+          name: AI-Translate-V0151-Mobile-Live-Audio-APK
           path: v015/build/outputs/apk/mobile/debug/v015-mobile-debug.apk
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: AI-Translate-V015-MT5889-TV-APK
+          name: AI-Translate-V0151-MT5889-TV-Live-Audio-APK
           path: v015/build/outputs/apk/mt5889/debug/v015-mt5889-debug.apk
           if-no-files-found: error
           retention-days: 30
