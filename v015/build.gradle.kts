@@ -7,22 +7,24 @@ android {
         applicationId = "com.moaqeel.aitranslator.v015"
         minSdk = 29
         targetSdk = 34
-        versionCode = 16
-        versionName = "0.15.1"
+        versionCode = 17
+        versionName = "0.15.2"
     }
     flavorDimensions += "device"
     productFlavors {
         create("mobile") {
             dimension = "device"
             applicationIdSuffix = ".mobile"
+            ndk { abiFilters += listOf("arm64-v8a") }
             buildConfigField("boolean", "TV_MODE", "false")
-            resValue("string", "app_name", "AI Translate V0.15 Mobile")
+            resValue("string", "app_name", "AI Translate V0.15.2 Mobile")
         }
         create("mt5889") {
             dimension = "device"
             applicationIdSuffix = ".mt5889"
+            ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
             buildConfigField("boolean", "TV_MODE", "true")
-            resValue("string", "app_name", "AI Translate V0.15 TV")
+            resValue("string", "app_name", "AI Translate V0.15.2 MT5889 TV")
         }
     }
     buildFeatures { buildConfig = true }
