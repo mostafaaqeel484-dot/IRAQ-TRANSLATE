@@ -1,0 +1,10 @@
+name: AI Translate V015 Public Runner Check
+on:
+  push:
+    branches: ['feature/ai-translate-v015-dual-build']
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Android build runner healthy"
