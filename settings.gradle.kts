@@ -4,4 +4,4 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral(); maven(url = "https://jitpack.io") }
 }
 rootProject.name = "IRAQ-TRANSLATE"
-include(":app")
+include(":app", ":v015")

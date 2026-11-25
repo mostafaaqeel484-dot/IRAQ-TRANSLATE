@@ -1,10 +1,41 @@
-name: AI Translate V015 Public Runner Check
+name: AI Translate V0.15 Mobile + MT5889 Build
 on:
   push:
     branches: ['feature/ai-translate-v015-dual-build']
+    paths: ['v015/**', '.github/workflows/v015-runner.yml', 'settings.gradle.kts']
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
-  smoke:
+  dual-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 55
     steps:
-      - run: echo "Android build runner healthy"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Assemble both versions
+        run: gradle --no-daemon --stacktrace :v015:assembleMobileDebug :v015:assembleMt5889Debug
+      - name: Verify two output packages
+        run: |
+          test -s v015/build/outputs/apk/mobile/debug/v015-mobile-debug.apk
+          test -s v015/build/outputs/apk/mt5889/debug/v015-mt5889-debug.apk
+          sha256sum v015/build/outputs/apk/*/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Translate-V015-Mobile-APK
+          path: v015/build/outputs/apk/mobile/debug/v015-mobile-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Translate-V015-MT5889-TV-APK
+          path: v015/build/outputs/apk/mt5889/debug/v015-mt5889-debug.apk
+          if-no-files-found: error
+          retention-days: 30
