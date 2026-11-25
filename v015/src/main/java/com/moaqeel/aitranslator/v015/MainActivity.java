@@ -17,6 +17,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -39,6 +40,9 @@ public final class MainActivity extends Activity {
     private EditText libreUrl;
     private EditText region;
     private EditText manualText;
+    private Spinner captionSizes;
+    private Spinner captionPositions;
+    private CheckBox bilingualCaption;
     private TextView status;
 
     @Override public void onCreate(Bundle state) {
@@ -51,7 +55,7 @@ public final class MainActivity extends Activity {
         body.setBackgroundColor(Color.rgb(10,11,14));
 
         addText(body, "AI Translate", BuildConfig.TV_MODE ? 34 : 28, 0xFFF3D16B, true);
-        addText(body, "V0.15.1  •  " + (BuildConfig.TV_MODE ? "MT5889 TV / Remote" : "Mobile / Android"),
+        addText(body, "V0.15.2  •  " + (BuildConfig.TV_MODE ? "MT5889 TV / Remote" : "Mobile / Android"),
             16, 0xFFBBBBBB, false);
         addText(body, "ترجمة النصوص الظاهرة على الشاشة إلى العربية — الإنجليزية واليابانية",
             BuildConfig.TV_MODE ? 20 : 16, Color.WHITE, false);
@@ -92,6 +96,31 @@ public final class MainActivity extends Activity {
         });
 
 
+
+        addText(body, "شكل الترجمة الصوتية — على طريقة Xiaomi AI Subtitles", 20, 0xFFF3D16B, true);
+        bilingualCaption = new CheckBox(this);
+        bilingualCaption.setText("عرض النص الأصلي + الترجمة العربية معاً");
+        bilingualCaption.setTextColor(Color.WHITE);
+        bilingualCaption.setTextSize(BuildConfig.TV_MODE ? 20f : 16f);
+        bilingualCaption.setChecked("on".equals(settings.get("caption_bilingual","on")));
+        bilingualCaption.setFocusable(true);
+        body.addView(bilingualCaption, new LinearLayout.LayoutParams(-1, dp(BuildConfig.TV_MODE ? 58 : 50)));
+        addText(body, "حجم خط الترجمة", 16, 0xFFF3D16B, true);
+        String[] sizes = {"20", "24", "28", "32", "38"};
+        captionSizes = spinner(body, sizes);
+        String oldSize = settings.get("caption_size", BuildConfig.TV_MODE ? "32" : "24");
+        for (int i=0;i<sizes.length;i++) if (sizes[i].equals(oldSize)) captionSizes.setSelection(i);
+        addText(body, "موضع نافذة الترجمة", 16, 0xFFF3D16B, true);
+        captionPositions = spinner(body, new String[]{"أسفل الشاشة", "أعلى الشاشة"});
+        captionPositions.setSelection("top".equals(settings.get("caption_position","bottom")) ? 1 : 0);
+        button(body, "حفظ شكل الترجمة", () -> {
+            settings.put("caption_bilingual", bilingualCaption.isChecked() ? "on" : "off");
+            settings.put("caption_size", sizes[captionSizes.getSelectedItemPosition()]);
+            settings.put("caption_position", captionPositions.getSelectedItemPosition() == 1 ? "top" : "bottom");
+            show("تم حفظ شكل الترجمة. أعد تشغيل الترجمة الصوتية لتطبيقه.");
+        });
+        addText(body, "اختيار المصدر: صوت النظام للألعاب والفيديو إذا سمح Android بالتقاطه، أو الميكروفون للصوت الخارجي. يمكن إيقاف الترجمة من إشعار التطبيق.",
+            14, 0xFFBBBBBB, false);
         addText(body, "🔥 ترجمة صوتية فورية — بدون انتظار OCR", 22, 0xFFF3D16B, true);
         addText(body, "Vosk: التعرف على الكلام محلياً بشكل مستمر، ثم تحويله إلى ترجمة عربية عائمة. أول استخدام ينزّل النموذج الإنجليزي (~40MB) أو الياباني (~48MB).", 15, Color.WHITE, false);
         button(body, "▶ بدء الترجمة الصوتية من الألعاب والتطبيقات", () -> {
