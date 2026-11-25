@@ -1,6 +1,8 @@
 package com.moaqeel.aitranslator.v015;
 
 import android.app.Activity;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
@@ -26,6 +28,9 @@ import java.util.Locale;
 public final class MainActivity extends Activity {
     private static final int REQUEST_CAPTURE = 400;
     private static final int REQUEST_SPEECH = 401;
+    private static final int REQUEST_AUDIO_CAPTURE = 402;
+    private static final int REQUEST_AUDIO_PERMISSION = 403;
+    private String pendingAudioMode = AudioTranslateService.MODE_PLAYBACK;
     private SecureSettings settings;
     private TranslationEngine translations;
     private Spinner providers;
@@ -46,7 +51,7 @@ public final class MainActivity extends Activity {
         body.setBackgroundColor(Color.rgb(10,11,14));
 
         addText(body, "AI Translate", BuildConfig.TV_MODE ? 34 : 28, 0xFFF3D16B, true);
-        addText(body, "V0.15  •  " + (BuildConfig.TV_MODE ? "MT5889 TV / Remote" : "Mobile / Android"),
+        addText(body, "V0.15.1  •  " + (BuildConfig.TV_MODE ? "MT5889 TV / Remote" : "Mobile / Android"),
             16, 0xFFBBBBBB, false);
         addText(body, "ترجمة النصوص الظاهرة على الشاشة إلى العربية — الإنجليزية واليابانية",
             BuildConfig.TV_MODE ? 20 : 16, Color.WHITE, false);
@@ -85,6 +90,25 @@ public final class MainActivity extends Activity {
             try { settings.storeApiKey(""); show("تم مسح المفتاح المحفوظ"); }
             catch (Exception e) { show("خطأ أثناء مسح المفتاح"); }
         });
+
+
+        addText(body, "🔥 ترجمة صوتية فورية — بدون انتظار OCR", 22, 0xFFF3D16B, true);
+        addText(body, "Vosk: التعرف على الكلام محلياً بشكل مستمر، ثم تحويله إلى ترجمة عربية عائمة. أول استخدام ينزّل النموذج الإنجليزي (~40MB) أو الياباني (~48MB).", 15, Color.WHITE, false);
+        button(body, "▶ بدء الترجمة الصوتية من الألعاب والتطبيقات", () -> {
+            saveQuick(ids);
+            startLiveAudio(AudioTranslateService.MODE_PLAYBACK);
+        });
+        button(body, "▶ بدء الترجمة الصوتية المستمرة عبر الميكروفون", () -> {
+            saveQuick(ids);
+            startLiveAudio(AudioTranslateService.MODE_MIC);
+        });
+        button(body, "■ إيقاف الترجمة الصوتية", () -> {
+            Intent stopAudio = new Intent(this, AudioTranslateService.class);
+            stopAudio.setAction(AudioTranslateService.ACTION_STOP);
+            startService(stopAudio);
+            show("تم طلب إيقاف الترجمة الصوتية");
+        });
+        addText(body, "ملاحظة: الصوت الداخلي يتطلب موافقة التقاط الشاشة وصلاحية الميكروفون. بعض ألعاب البث وقنوات DVB/HDMI تمنع الالتقاط؛ وضع الميكروفون بديل للاستماع للتلفاز خارجياً.", 13, 0xFFBBBBBB, false);
 
         addText(body, "ترجمة الشاشة", 20, 0xFFF3D16B, true);
         button(body, "السماح بظهور الترجمة فوق التطبيقات", () -> {
@@ -135,6 +159,54 @@ public final class MainActivity extends Activity {
         scroll.addView(body);
         setContentView(scroll);
     }
+    private void startLiveAudio(String mode) {
+        pendingAudioMode = mode;
+        if (!Settings.canDrawOverlays(this)) {
+            new AlertDialog.Builder(this).setMessage("فعّل ظهور الترجمة العائمة فوق الألعاب أولاً.")
+                .setPositiveButton("الإعدادات", (d, w) -> startActivity(new Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()))))
+                .setNegativeButton("إلغاء", null).show();
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_AUDIO_PERMISSION);
+            return;
+        }
+        audioConsentOrStart();
+    }
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(requestCode, permissions, grants);
+        if (requestCode == REQUEST_AUDIO_PERMISSION) {
+            if (grants.length > 0 && grants[0] == PackageManager.PERMISSION_GRANTED) {
+                audioConsentOrStart();
+            } else show("تحتاج الترجمة الصوتية إلى إذن تسجيل الصوت");
+        }
+    }
+    private void audioConsentOrStart() {
+        if (AudioTranslateService.MODE_PLAYBACK.equals(pendingAudioMode)) {
+            try {
+                MediaProjectionManager manager = (MediaProjectionManager)
+                    getSystemService(MEDIA_PROJECTION_SERVICE);
+                startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_AUDIO_CAPTURE);
+            } catch (Exception e) { show("تعذر طلب إذن التقاط صوت التطبيقات: " + e.getMessage()); }
+        } else {
+            launchAudioService(AudioTranslateService.MODE_MIC, 0, null);
+        }
+    }
+    private void launchAudioService(String mode, int code, Intent projectionData) {
+        Intent launch = new Intent(this, AudioTranslateService.class);
+        launch.setAction(AudioTranslateService.ACTION_START);
+        launch.putExtra("mode", mode);
+        if (projectionData != null) {
+            launch.putExtra("result_code", code);
+            launch.putExtra("projection_data", projectionData);
+        }
+        try {
+            startForegroundService(launch);
+            show("تهيئة نموذج التعرف على الصوت... يبدأ الاستماع بعد التحميل الأول");
+        } catch (Exception e) { show("تعذر بدء خدمة الترجمة الصوتية: " + e.getMessage()); }
+    }
+
     private void saveQuick(String[] ids) {
         settings.put("provider", ids[providers.getSelectedItemPosition()]);
         settings.put("source", sources.getSelectedItemPosition() == 1 ? "ja" : "en");
@@ -150,6 +222,9 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == REQUEST_AUDIO_CAPTURE && result == RESULT_OK && data != null) {
+            launchAudioService(AudioTranslateService.MODE_PLAYBACK, result, data);
+        }
         if (request == REQUEST_CAPTURE && result == RESULT_OK && data != null) {
             Intent launch = new Intent(this, ScreenTranslateService.class);
             launch.setAction(ScreenTranslateService.ACTION_START);
